@@ -1,29 +1,34 @@
 import io
 import os
-import csv
 from flask import Flask, request, send_file, jsonify
 from dbfread import DBF
+import pandas as pd
 
 app = Flask(__name__)
 
-def suggested_csv_name(original_name: str) -> str:
-    if not original_name:
-        return "output.csv"
-    base = os.path.basename(original_name)
-    first = base[:1].upper()
-    if first == "C":
-        return "CHIKUNGUNYA.csv"
-    if first == "D":
-        return "DENGUE.csv"
-    if base.lower().endswith(".dbf"):
-        return base[:-4] + ".csv"
-    return base + ".csv"
+def dbf_bytes_to_csv_bytes(dbf_bytes: bytes) -> bytes:
+    # DBFread precisa de "arquivo". Vamos usar um arquivo temporário em memória
+    # (dbfread aceita file-like? geralmente é caminho; então usamos temp file)
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".dbf", delete=True) as tmp:
+        tmp.write(dbf_bytes)
+        tmp.flush()
 
+        try:
+            table = DBF(tmp.name, load=True, encoding="cp1252", char_decode_errors="ignore")
+        except Exception:
+            table = DBF(tmp.name, load=True, encoding="latin1", char_decode_errors="ignore")
+
+        df = pd.DataFrame(iter(table))
+        df.columns = [str(c).strip() for c in df.columns]
+
+    out = io.StringIO()
+    df.to_csv(out, index=False)
+    return out.getvalue().encode("utf-8-sig")
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok"}
-
+    return {"ok": True}
 
 @app.post("/convert")
 def convert():
@@ -31,36 +36,18 @@ def convert():
         return jsonify({"error": "Send multipart/form-data with field 'file'"}), 400
 
     f = request.files["file"]
-    filename = f.filename or "input.dbf"
-
     dbf_bytes = f.read()
-    if not dbf_bytes:
-        return jsonify({"error": "Empty file"}), 400
 
-    dbf_stream = io.BytesIO(dbf_bytes)
+    csv_bytes = dbf_bytes_to_csv_bytes(dbf_bytes)
 
-    table = DBF(dbf_stream, load=True, char_decode_errors="ignore")
-
-    out = io.StringIO()
-    writer = csv.writer(out)
-
-    headers = list(table.field_names)
-    writer.writerow(headers)
-
-    for record in table:
-        writer.writerow([record.get(h, "") for h in headers])
-
-    csv_bytes = out.getvalue().encode("utf-8-sig")
-
-    out_filename = suggested_csv_name(filename)
-
+    # devolve como arquivo CSV
     return send_file(
         io.BytesIO(csv_bytes),
-        mimetype="text/csv",
+        mimetype="text/csv; charset=utf-8",
         as_attachment=True,
-        download_name=out_filename
+        download_name="output.csv",
     )
 
-
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
