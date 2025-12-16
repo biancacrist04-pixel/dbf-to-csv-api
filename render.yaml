@@ -1,8 +1,1 @@
-services:
-  - type: web
-    name: dbf-to-csv-api
-    env: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
-    autoDeploy: true
+
